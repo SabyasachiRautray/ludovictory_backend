@@ -31,7 +31,7 @@ app.use("/api/streak",streakRoutes)
 
 //start the server
 
-const PORT = process.env.APP_PORT || 5000;
+const PORT = process.env.PORT ;
 app.listen(PORT, async () => {
   try {
     await db.sequelize.authenticate();
