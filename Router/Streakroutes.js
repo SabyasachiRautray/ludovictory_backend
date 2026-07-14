@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const streakController = require("../controllers/streakController");
+const streakController = require("../controllers/Streakcontroller");
 const authMiddleware = require("../middleware/authMiddleware");
 
 router.get("/", authMiddleware, streakController.getStreakStatus);
