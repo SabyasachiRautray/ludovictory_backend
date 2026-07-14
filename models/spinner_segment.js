@@ -26,6 +26,12 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.BOOLEAN,
         defaultValue: true,
       },
+      // this will be used to add odd probabilities 
+      weight: {
+        type: DataTypes.DECIMAL(12, 6),
+        allowNull: false,
+        defaultValue: 1,
+      },
 
       display_order: {
         // Controls segment order on the wheel visually
@@ -37,7 +43,7 @@ module.exports = (sequelize, DataTypes) => {
     {
       timestamps: true,
       underscored: true,
-    }
+    },
   );
 
   SpinnerSegment.associate = function (models) {

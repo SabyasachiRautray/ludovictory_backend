@@ -7,22 +7,19 @@ module.exports = (sequelize, DataTypes) => {
         autoIncrement: true,
         primaryKey: true,
       },
-
-      mobile: {
-        type: DataTypes.STRING(15),
+      email: {
+        type: DataTypes.STRING,
         allowNull: false,
+        validate: { isEmail: true },
       },
-
       otp_code: {
         type: DataTypes.STRING(6),
         allowNull: false,
       },
-
       is_used: {
         type: DataTypes.BOOLEAN,
         defaultValue: false,
       },
-
       expires_at: {
         type: DataTypes.DATE,
         allowNull: false,

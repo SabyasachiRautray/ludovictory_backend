@@ -7,7 +7,7 @@ const adminMiddleware = require("../middleware/roleMiddleware");
 const upload = require("../middleware/upload")
 
 // User
-router.get("/", authMiddleware, productController.getProducts);
+router.get("/", productController.getProducts);
 router.get("/:id", authMiddleware, productController.getProductById);
 
 // Admin

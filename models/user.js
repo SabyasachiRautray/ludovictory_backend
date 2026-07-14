@@ -73,7 +73,7 @@ module.exports = (sequelize, DataTypes) => {
         onDelete: "SET NULL",
       },
 
-      is_mobile_verified: {
+      is_email_verified: {
         type: DataTypes.BOOLEAN,
         defaultValue: false,
       },
@@ -92,6 +92,23 @@ module.exports = (sequelize, DataTypes) => {
       status: {
         type: DataTypes.ENUM("active", "blocked"),
         defaultValue: "active",
+      },
+       current_streak: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
+ 
+      longest_streak: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
+ 
+      
+      last_claimed_date: {
+        type: DataTypes.DATEONLY,
+        allowNull: true,
       },
     },
     {

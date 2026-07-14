@@ -7,8 +7,10 @@ const spinnerRoutes = require("./Router/spinnerRoutes");
 const productRoutes = require("./router/productRoutes");
 const orderRoutes = require("./router/orderRoutes");
 const leaderboardRoutes = require("./Router/leaderBoardRoutes");
-const referralRoutes = require("./Router/referralRoutes")
-
+const referralRoutes = require("./Router/referralRoutes");
+const tokenPurchaseRoutes = require("./Router/tokenPurchaseRoutes")
+const configRoutes = require("./Router/configRoutes");
+const streakRoutes = require("./Router/Streakroutes")
 
 const app = express();
 
@@ -23,6 +25,9 @@ app.use("/api/products", productRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/leaderboard", leaderboardRoutes);
 app.use("/api/referral", referralRoutes);
+app.use("/api", tokenPurchaseRoutes);
+app.use("/api/config", configRoutes);
+app.use("/api/streak",streakRoutes)
 
 //start the server
 

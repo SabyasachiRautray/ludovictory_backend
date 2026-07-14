@@ -4,6 +4,12 @@ const { Op } = require("sequelize");
 const db = require("../db/db-connection");
 const { transferTokens } = require("../services/tokenServices");
 const { incrementReferralCount } = require("../services/leaderBoardService");
+const {
+  uploadBufferToCloudinary,
+  deleteFromCloudinary,
+} = require("../services/cloudinaryService");
+const { sendOtpEmail } = require("../services/emailServices");
+const { getInt } = require("../services/configService");
 
 const {
   user: User,
@@ -21,15 +27,11 @@ const generateReferralCode = async () => {
   let code, exists;
   do {
     code = Array.from({ length: 8 }, () =>
-      chars.charAt(Math.floor(Math.random() * chars.length)),
+      chars.charAt(Math.floor(Math.random() * chars.length))
     ).join("");
     exists = await User.findOne({ where: { referral_code: code } });
   } while (exists);
   return code;
-};
-
-const sendOtp = async (mobile, otp_code) => {
-  console.log(`[OTP] Sending ${otp_code} to ${mobile}`);
 };
 
 // Never expose password — returns both wallet balances when wallet is provided
@@ -43,7 +45,7 @@ const safeUser = (user, wallet = null) => ({
   referral_code: user.referral_code,
   role: user.role,
   status: user.status,
-  is_mobile_verified: user.is_mobile_verified,
+  is_email_verified: user.is_email_verified,
   created_at: user.created_at,
   ...(wallet !== null && {
     referral_token_balance: wallet.referral_token_balance ?? 0,
@@ -55,24 +57,24 @@ const safeUser = (user, wallet = null) => ({
 
 exports.sendOtp = async (req, res) => {
   try {
-    const { mobile } = req.body;
+    const { email } = req.body;
 
-    if (!mobile) {
-      return res.status(400).json({ message: "Mobile number is required" });
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
     }
 
-    const existingUser = await User.findOne({ where: { mobile } });
-    if (existingUser && existingUser.is_mobile_verified) {
-      return res.status(409).json({ message: "Mobile already registered" });
+    const existingUser = await User.findOne({ where: { email } });
+    if (existingUser && existingUser.is_email_verified) {
+      return res.status(409).json({ message: "Email already registered" });
     }
 
-    await Otp.update({ is_used: true }, { where: { mobile, is_used: false } });
+    await Otp.update({ is_used: true }, { where: { email, is_used: false } });
 
     const otp_code = Math.floor(100000 + Math.random() * 900000).toString();
     const expires_at = new Date(Date.now() + 10 * 60 * 1000);
 
-    await Otp.create({ mobile, otp_code, expires_at });
-    await sendOtp(mobile, otp_code);
+    await Otp.create({ email, otp_code, expires_at });
+    await sendOtpEmail(email, otp_code);
 
     return res.status(200).json({ message: "OTP sent successfully" });
   } catch (err) {
@@ -85,15 +87,15 @@ exports.sendOtp = async (req, res) => {
 
 exports.verifyOtp = async (req, res) => {
   try {
-    const { mobile, otp_code } = req.body;
+    const { email, otp_code } = req.body;
 
-    if (!mobile || !otp_code) {
-      return res.status(400).json({ message: "Mobile and OTP are required" });
+    if (!email || !otp_code) {
+      return res.status(400).json({ message: "Email and OTP are required" });
     }
 
     const otpRecord = await Otp.findOne({
       where: {
-        mobile,
+        email,
         otp_code,
         is_used: false,
         expires_at: { [Op.gt]: new Date() },
@@ -128,12 +130,12 @@ exports.register = async (req, res) => {
     }
 
     const verifiedOtp = await Otp.findOne({
-      where: { mobile, is_used: true },
+      where: { email, is_used: true },
       order: [["created_at", "DESC"]],
     });
     if (!verifiedOtp) {
       await t.rollback();
-      return res.status(400).json({ message: "Mobile OTP not verified" });
+      return res.status(400).json({ message: "Email OTP not verified" });
     }
 
     const duplicate = await User.findOne({
@@ -180,23 +182,22 @@ exports.register = async (req, res) => {
         referral_code,
         referred_by_code: referred_by_code || null,
         referred_by: referrer ? referrer.id : null,
-        is_mobile_verified: true,
+        is_email_verified: true,
         role: "user",
       },
-      { transaction: t },
+      { transaction: t }
     );
 
-    // Create wallet with both balances starting at 0
     await Wallet.create(
       {
         user_id: newUser.id,
         referral_token_balance: 0,
         shopping_token_balance: 0,
       },
-      { transaction: t },
+      { transaction: t }
     );
 
-    const SIGNUP_BONUS = 100;
+    const SIGNUP_BONUS   = await getInt("signup_bonus",   100);
     const { wallet: updatedWallet } = await transferTokens({
       user_id: newUser.id,
       wallet_type: "referral",
@@ -210,8 +211,8 @@ exports.register = async (req, res) => {
     await newUser.update({ signup_bonus_credited: true }, { transaction: t });
 
     if (referrer) {
-      const REFERRER_BONUS = 200;
-      const REFERRED_BONUS = 100;
+      const REFERRER_BONUS = await getInt("referrer_bonus", 200);
+      const REFERRED_BONUS = await getInt("referred_bonus", 100);
 
       const referralRecord = await Referral.create(
         {
@@ -224,7 +225,7 @@ exports.register = async (req, res) => {
           referred_bonus_credited: false,
           status: "pending",
         },
-        { transaction: t },
+        { transaction: t }
       );
 
       await transferTokens({
@@ -240,7 +241,7 @@ exports.register = async (req, res) => {
 
       await referralRecord.update(
         { referred_bonus_credited: true },
-        { transaction: t },
+        { transaction: t }
       );
 
       await transferTokens({
@@ -256,10 +257,9 @@ exports.register = async (req, res) => {
 
       await referralRecord.update(
         { referrer_bonus_credited: true, status: "completed" },
-        { transaction: t },
+        { transaction: t }
       );
 
-      // Increment referrer's referral count on leaderboard
       await incrementReferralCount(referrer.id, t);
     }
 
@@ -268,7 +268,7 @@ exports.register = async (req, res) => {
     const token = jwt.sign(
       { id: newUser.id, role: newUser.role },
       process.env.JWT_SECRET,
-      { expiresIn: "7d" },
+      { expiresIn: "7d" }
     );
 
     return res.status(201).json({
@@ -332,12 +332,12 @@ exports.adminCreateUser = async (req, res) => {
         mobile,
         password: hashedPassword,
         referral_code,
-        is_mobile_verified: true,
+        is_email_verified: true,
         signup_bonus_credited: true,
         role,
         status: "active",
       },
-      { transaction: t },
+      { transaction: t }
     );
 
     await Wallet.create(
@@ -346,7 +346,7 @@ exports.adminCreateUser = async (req, res) => {
         referral_token_balance: 0,
         shopping_token_balance: 0,
       },
-      { transaction: t },
+      { transaction: t }
     );
 
     await t.commit();
@@ -385,8 +385,8 @@ exports.login = async (req, res) => {
     if (!user) return res.status(404).json({ message: "User not found" });
     if (user.status === "blocked")
       return res.status(403).json({ message: "Account is blocked" });
-    if (!user.is_mobile_verified)
-      return res.status(403).json({ message: "Mobile not verified" });
+    if (!user.is_email_verified)
+      return res.status(403).json({ message: "Email not verified" });
 
     const passwordMatch = await bcrypt.compare(password, user.password);
     if (!passwordMatch)
@@ -395,7 +395,7 @@ exports.login = async (req, res) => {
     const token = jwt.sign(
       { id: user.id, role: user.role },
       process.env.JWT_SECRET,
-      { expiresIn: "7d" },
+      { expiresIn: "7d" }
     );
 
     return res.status(200).json({
@@ -501,167 +501,168 @@ exports.getUserById = async (req, res) => {
 // ─── UPDATE USER (self) ───────────────────────────────────────────────────────
 
 exports.updateMe = async (req, res) => {
-  const t = await sequelize.transaction();
   let uploadedImage = null;
+
   try {
-    const user_id = req.user.id;
-    const { full_name, username, email, profile_image } = req.body;
-
-    const user = await User.findByPk(user_id, { transaction: t });
-    if (!user) {
-      await t.rollback();
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    if (username && username !== user.username) {
-      const exists = await User.findOne({
-        where: { username },
-        transaction: t,
-      });
-      if (exists) {
-        await t.rollback();
-        return res.status(409).json({ message: "Username already in use" });
-      }
-    }
-
-    if (email && email !== user.email) {
-      const exists = await User.findOne({ where: { email }, transaction: t });
-      if (exists) {
-        await t.rollback();
-        return res.status(409).json({ message: "Email already in use" });
-      }
-    }
-
-    const updates = {};
-    if (full_name) updates.full_name = full_name;
-    if (username) updates.username = username;
-    if (email) updates.email = email;
     if (req.file) {
-      uploadedImage = await uploadBufferToCloudinary(
-        req.file.buffer,
-        "profiles",
-      );
-
-      updates.profile_image = uploadedImage.secure_url;
-      updates.profile_public_id = uploadedImage.public_id;
+      uploadedImage = await uploadBufferToCloudinary(req.file.buffer, "profiles");
     }
-    if (!Object.keys(updates).length) {
+
+    const t = await sequelize.transaction();
+    try {
+      const user_id = req.user.id;
+      const { full_name, username, email } = req.body;
+
+      const user = await User.findByPk(user_id, { transaction: t });
+      if (!user) {
+        await t.rollback();
+        if (uploadedImage) await deleteFromCloudinary(uploadedImage.public_id);
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      if (username && username !== user.username) {
+        const exists = await User.findOne({ where: { username }, transaction: t });
+        if (exists) {
+          await t.rollback();
+          if (uploadedImage) await deleteFromCloudinary(uploadedImage.public_id);
+          return res.status(409).json({ message: "Username already in use" });
+        }
+      }
+
+      if (email && email !== user.email) {
+        const exists = await User.findOne({ where: { email }, transaction: t });
+        if (exists) {
+          await t.rollback();
+          if (uploadedImage) await deleteFromCloudinary(uploadedImage.public_id);
+          return res.status(409).json({ message: "Email already in use" });
+        }
+      }
+
+      const updates = {};
+      if (full_name)     updates.full_name                 = full_name;
+      if (username)      updates.username                  = username;
+      if (email)         updates.email                     = email;
+      if (uploadedImage) {
+        updates.profile_image           = uploadedImage.secure_url;
+        updates.profile_image_public_id = uploadedImage.public_id;
+      }
+
+      if (!Object.keys(updates).length) {
+        await t.rollback();
+        if (uploadedImage) await deleteFromCloudinary(uploadedImage.public_id);
+        return res.status(400).json({ message: "No valid fields provided" });
+      }
+
+      const oldPublicId = uploadedImage ? user.profile_image_public_id : null;
+
+      await user.update(updates, { transaction: t });
+      await t.commit();
+
+      if (oldPublicId) await deleteFromCloudinary(oldPublicId);
+
+      return res.status(200).json({
+        message: "Profile updated successfully",
+        user: safeUser(user),
+      });
+    } catch (err) {
       await t.rollback();
-      return res.status(400).json({ message: "No valid fields provided" });
+      if (uploadedImage) await deleteFromCloudinary(uploadedImage.public_id);
+      throw err;
     }
-
-    await user.update(updates, { transaction: t });
-    await t.commit();
-    if (uploadedImage && user.profile_public_id) {
-      await deleteFromCloudinary(user.profile_public_id);
-    }
-
-    return res.status(200).json({
-      message: "Profile updated successfully",
-      user: safeUser(user),
-    });
   } catch (err) {
-    await t.rollback();
-
-    if (uploadedImage) {
-      await deleteFromCloudinary(uploadedImage.public_id);
-    }
-
     console.error("[updateMe]", err);
-
-    return res.status(500).json({
-      message: "Internal server error",
-    });
+    return res.status(500).json({ message: "Internal server error" });
   }
 };
 
 // ─── UPDATE USER (Admin) ──────────────────────────────────────────────────────
 
 exports.adminUpdateUser = async (req, res) => {
-  const t = await sequelize.transaction();
   let uploadedImage = null;
+
   try {
-    const { id } = req.params;
-    const { full_name, username, email, role, status, profile_image } =
-      req.body;
-
-    const user = await User.findByPk(id, { transaction: t });
-    if (!user) {
-      await t.rollback();
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    if (username && username !== user.username) {
-      const exists = await User.findOne({
-        where: { username },
-        transaction: t,
-      });
-      if (exists) {
-        await t.rollback();
-        return res.status(409).json({ message: "Username already in use" });
-      }
-    }
-
-    if (email && email !== user.email) {
-      const exists = await User.findOne({ where: { email }, transaction: t });
-      if (exists) {
-        await t.rollback();
-        return res.status(409).json({ message: "Email already in use" });
-      }
-    }
-
-    if (role && !["user", "admin"].includes(role)) {
-      await t.rollback();
-      return res.status(400).json({ message: "Invalid role" });
-    }
-
-    if (status && !["active", "blocked"].includes(status)) {
-      await t.rollback();
-      return res.status(400).json({ message: "Invalid status" });
-    }
-
-    const updates = {};
-    if (full_name) updates.full_name = full_name;
-    if (username) updates.username = username;
-    if (email) updates.email = email;
-    if (role) updates.role = role;
-    if (status) updates.status = status;
     if (req.file) {
-      uploadedImage = await uploadBufferToCloudinary(
-        req.file.buffer,
-        "profiles",
-      );
-
-      updates.profile_image = uploadedImage.secure_url;
-      updates.profile_public_id = uploadedImage.public_id;
+      uploadedImage = await uploadBufferToCloudinary(req.file.buffer, "profiles");
     }
 
-    if (!Object.keys(updates).length) {
+    const t = await sequelize.transaction();
+    try {
+      const { id } = req.params;
+      const { full_name, username, email, role, status } = req.body;
+
+      const user = await User.findByPk(id, { transaction: t });
+      if (!user) {
+        await t.rollback();
+        if (uploadedImage) await deleteFromCloudinary(uploadedImage.public_id);
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      if (username && username !== user.username) {
+        const exists = await User.findOne({ where: { username }, transaction: t });
+        if (exists) {
+          await t.rollback();
+          if (uploadedImage) await deleteFromCloudinary(uploadedImage.public_id);
+          return res.status(409).json({ message: "Username already in use" });
+        }
+      }
+
+      if (email && email !== user.email) {
+        const exists = await User.findOne({ where: { email }, transaction: t });
+        if (exists) {
+          await t.rollback();
+          if (uploadedImage) await deleteFromCloudinary(uploadedImage.public_id);
+          return res.status(409).json({ message: "Email already in use" });
+        }
+      }
+
+      if (role && !["user", "admin"].includes(role)) {
+        await t.rollback();
+        if (uploadedImage) await deleteFromCloudinary(uploadedImage.public_id);
+        return res.status(400).json({ message: "Invalid role" });
+      }
+
+      if (status && !["active", "blocked"].includes(status)) {
+        await t.rollback();
+        if (uploadedImage) await deleteFromCloudinary(uploadedImage.public_id);
+        return res.status(400).json({ message: "Invalid status" });
+      }
+
+      const updates = {};
+      if (full_name)     updates.full_name                 = full_name;
+      if (username)      updates.username                  = username;
+      if (email)         updates.email                     = email;
+      if (role)          updates.role                      = role;
+      if (status)        updates.status                    = status;
+      if (uploadedImage) {
+        updates.profile_image           = uploadedImage.secure_url;
+        updates.profile_image_public_id = uploadedImage.public_id;
+      }
+
+      if (!Object.keys(updates).length) {
+        await t.rollback();
+        if (uploadedImage) await deleteFromCloudinary(uploadedImage.public_id);
+        return res.status(400).json({ message: "No valid fields provided" });
+      }
+
+      const oldPublicId = uploadedImage ? user.profile_image_public_id : null;
+
+      await user.update(updates, { transaction: t });
+      await t.commit();
+
+      if (oldPublicId) await deleteFromCloudinary(oldPublicId);
+
+      return res.status(200).json({
+        message: "User updated successfully",
+        user: safeUser(user),
+      });
+    } catch (err) {
       await t.rollback();
-      return res.status(400).json({ message: "No valid fields provided" });
+      if (uploadedImage) await deleteFromCloudinary(uploadedImage.public_id);
+      throw err;
     }
-
-    await user.update(updates, { transaction: t });
-    await t.commit();
-    if (uploadedImage && user.profile_public_id) {
-      await deleteFromCloudinary(user.profile_public_id);
-    }
-
-    return res.status(200).json({
-      message: "User updated successfully",
-      user: safeUser(user),
-    });
   } catch (err) {
-    await t.rollback();
-
-    if (uploadedImage) {
-      await deleteFromCloudinary(uploadedImage.public_id);
-    }
-
     console.error("[adminUpdateUser]", err);
-    return res.status(500).json({
-      message: "Internal server error",
-    });
+    return res.status(500).json({ message: "Internal server error" });
   }
 };
 
@@ -674,9 +675,7 @@ exports.adminDeleteUser = async (req, res) => {
 
     if (parseInt(id) === req.user.id) {
       await t.rollback();
-      return res
-        .status(400)
-        .json({ message: "Cannot delete your own account" });
+      return res.status(400).json({ message: "Cannot delete your own account" });
     }
 
     const user = await User.findByPk(id, { transaction: t });
@@ -687,6 +686,7 @@ exports.adminDeleteUser = async (req, res) => {
 
     await user.destroy({ transaction: t });
     await t.commit();
+
     if (user.profile_public_id) {
       await deleteFromCloudinary(user.profile_public_id);
     }
@@ -703,30 +703,30 @@ exports.adminDeleteUser = async (req, res) => {
 
 exports.forgotPassword = async (req, res) => {
   try {
-    const { mobile } = req.body;
+    const { email } = req.body;
 
-    if (!mobile) {
-      return res.status(400).json({ message: "Mobile number is required" });
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
     }
 
-    const user = await User.findOne({ where: { mobile } });
+    const user = await User.findOne({ where: { email } });
     if (!user) {
       return res.status(200).json({
-        message: "If this mobile is registered, an OTP has been sent",
+        message: "If this email is registered, an OTP has been sent",
       });
     }
 
-    await Otp.update({ is_used: true }, { where: { mobile, is_used: false } });
+    await Otp.update({ is_used: true }, { where: { email, is_used: false } });
 
     const otp_code = Math.floor(100000 + Math.random() * 900000).toString();
     const expires_at = new Date(Date.now() + 10 * 60 * 1000);
 
-    await Otp.create({ mobile, otp_code, expires_at });
-    await sendOtp(mobile, otp_code);
+    await Otp.create({ email, otp_code, expires_at });
+    await sendOtpEmail(email, otp_code);
 
-    return res
-      .status(200)
-      .json({ message: "If this mobile is registered, an OTP has been sent" });
+    return res.status(200).json({
+      message: "If this email is registered, an OTP has been sent",
+    });
   } catch (err) {
     console.error("[forgotPassword]", err);
     return res.status(500).json({ message: "Internal server error" });
@@ -737,15 +737,15 @@ exports.forgotPassword = async (req, res) => {
 
 exports.verifyForgotOtp = async (req, res) => {
   try {
-    const { mobile, otp_code } = req.body;
+    const { email, otp_code } = req.body;
 
-    if (!mobile || !otp_code) {
-      return res.status(400).json({ message: "Mobile and OTP are required" });
+    if (!email || !otp_code) {
+      return res.status(400).json({ message: "Email and OTP are required" });
     }
 
     const otpRecord = await Otp.findOne({
       where: {
-        mobile,
+        email,
         otp_code,
         is_used: false,
         expires_at: { [Op.gt]: new Date() },
@@ -759,9 +759,7 @@ exports.verifyForgotOtp = async (req, res) => {
 
     await otpRecord.update({ is_used: true });
 
-    return res
-      .status(200)
-      .json({ message: "OTP verified. Proceed to reset password." });
+    return res.status(200).json({ message: "OTP verified. Proceed to reset password." });
   } catch (err) {
     console.error("[verifyForgotOtp]", err);
     return res.status(500).json({ message: "Internal server error" });
@@ -773,43 +771,35 @@ exports.verifyForgotOtp = async (req, res) => {
 exports.resetPassword = async (req, res) => {
   const t = await sequelize.transaction();
   try {
-    const { mobile, new_password } = req.body;
+    const { email, new_password } = req.body;
 
-    if (!mobile || !new_password) {
+    if (!email || !new_password) {
       await t.rollback();
-      return res
-        .status(400)
-        .json({ message: "Mobile and new password are required" });
+      return res.status(400).json({ message: "Email and new password are required" });
     }
 
     if (new_password.length < 6) {
       await t.rollback();
-      return res
-        .status(400)
-        .json({ message: "Password must be at least 6 characters" });
+      return res.status(400).json({ message: "Password must be at least 6 characters" });
     }
 
     const verifiedOtp = await Otp.findOne({
-      where: { mobile, is_used: true },
+      where: { email, is_used: true },
       order: [["updated_at", "DESC"]],
     });
 
     if (!verifiedOtp) {
       await t.rollback();
-      return res
-        .status(400)
-        .json({ message: "OTP not verified for this mobile" });
+      return res.status(400).json({ message: "OTP not verified for this email" });
     }
 
     const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000);
     if (verifiedOtp.updated_at < fifteenMinsAgo) {
       await t.rollback();
-      return res
-        .status(400)
-        .json({ message: "OTP session expired. Please request a new OTP." });
+      return res.status(400).json({ message: "OTP session expired. Please request a new OTP." });
     }
 
-    const user = await User.findOne({ where: { mobile }, transaction: t });
+    const user = await User.findOne({ where: { email }, transaction: t });
     if (!user) {
       await t.rollback();
       return res.status(404).json({ message: "User not found" });
@@ -828,14 +818,14 @@ exports.resetPassword = async (req, res) => {
   }
 };
 
-// ─── GET /api/auth/recent-users ───────────────────────────────────────────────
-// Public — most recently registered users (for users ticker)
+// ─── GET RECENT USERS ─────────────────────────────────────────────────────────
+
 exports.getRecentUsers = async (req, res) => {
   try {
     const { limit = 20 } = req.query;
 
     const users = await User.findAll({
-      where: { status: "active", is_mobile_verified: true },
+      where: { status: "active", is_email_verified: true },
       order: [["created_at", "DESC"]],
       limit: Math.min(parseInt(limit), 50),
       attributes: ["id", "username", "full_name", "created_at"],
@@ -848,7 +838,8 @@ exports.getRecentUsers = async (req, res) => {
   }
 };
 
-//get transaction history
+// ─── GET MY TRANSACTIONS ──────────────────────────────────────────────────────
+
 exports.getMyTransactions = async (req, res) => {
   try {
     const user_id = req.user.id;
@@ -871,14 +862,8 @@ exports.getMyTransactions = async (req, res) => {
       limit: Math.min(parseInt(limit), 50),
       offset,
       attributes: [
-        "id",
-        "wallet_type",
-        "type",
-        "source",
-        "tokens",
-        "balance_after",
-        "remarks",
-        "created_at",
+        "id", "wallet_type", "type", "source",
+        "tokens", "balance_after", "remarks", "created_at",
       ],
     });
 

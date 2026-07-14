@@ -2,14 +2,30 @@ const db = require("../db/db-connection");
 const { transferTokens } = require("../services/tokenServices");
 const { updateLeaderboardScore } = require("../services/leaderBoardService")
 const { Op } = require("sequelize");
-
+const { getInt } = require("../services/configService")
 const {
   spinner_segment: SpinnerSegment,
   spinner_result: SpinnerResult,
   sequelize,
 } = db;
 
-const SPIN_COST = 1;
+
+// this will be used to reduce the probability of getting a higher value item in the spinner
+function pickWeightedSegment(segments) {
+  const weights = segments.map((s) => parseFloat(s.weight));
+  const totalWeight = weights.reduce((sum, w) => sum + w, 0);
+
+  let r = Math.random() * totalWeight;
+
+  for (let i = 0; i < segments.length; i++) {
+    r -= weights[i];
+    if (r <= 0 && weights[i] > 0) return segments[i];
+  }
+
+  // Fallback: pick the last segment with weight > 0, never a 0-weight one
+  const fallbackPool = segments.filter((_, i) => weights[i] > 0);
+  return fallbackPool[fallbackPool.length - 1] ?? segments[segments.length - 1];
+}
 
 // ─── GET /api/spinner/segments ───────────────────────────────────────────────
 // Public | Query: ?page=1&limit=10&is_active=true&search=token&sort=display_order&order=ASC
@@ -219,6 +235,8 @@ exports.spin = async (req, res) => {
   try {
     const user_id = req.user.id;
 
+    const SPIN_COST = await getInt("spin_cost", 1);
+
     const segments = await SpinnerSegment.findAll({
       where: { is_active: true },
       transaction: t,
@@ -240,7 +258,7 @@ exports.spin = async (req, res) => {
       transaction: t,
     });
 
-    const winner = segments[Math.floor(Math.random() * segments.length)];
+    const winner = pickWeightedSegment(segments);
 
     const spinResult = await SpinnerResult.create(
       {

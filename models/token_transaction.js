@@ -37,7 +37,8 @@ module.exports = (sequelize, DataTypes) => {
           // shopping wallet sources
           "spinner_reward",         // credit to shopping wallet
           "product_redemption",     // debit from shopping wallet
-          "product_refund"          // credit to shopping wallet on cancel
+          "product_refund" ,
+          "token_purchase"         // credit to shopping wallet on cancel
           // Future: "prize_redemption", "game_win", "game_loss"
         ),
         allowNull: false,
