@@ -27,7 +27,7 @@ const daysBetween = (a, b) => {
 // Reward schedule — customize freely. Cycles back to day 1 reward after day 7.
 // Keeping this here (not in DB) means it's easy to read/tune; move to app_config
 // if you want it admin-editable later.
-const STREAK_REWARDS = [10, 15, 20, 25, 30, 40, 100]; // index 0 = day 1
+const STREAK_REWARDS = [100, 200, 300, 500, 600, 700, 900]; // index 0 = day 1
 
 const rewardForDay = (streakDay) => {
   const idx = (streakDay - 1) % STREAK_REWARDS.length;
